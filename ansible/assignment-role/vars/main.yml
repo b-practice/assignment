@@ -1,0 +1,6 @@
+---
+# vars file for assignment-role
+docker_image_name: "your-dockerhub-username/your-app"
+docker_image_tag: "latest"
+docker_container_name: "my-flask-app"
+app_data_dir: "/path/to/your/app/data"

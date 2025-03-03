@@ -1,0 +1,125 @@
+pipeline {
+    agent any
+
+    environment {
+        ANSIBLE_HOST_KEY_CHECKING = 'false'  // Disabling strict host key checking (you can adjust this for better security)
+        ANSIBLE_USER = 'ec2-user'       // User on EC2 instance (ec2-user for Amazon Linux)
+        ANSIBLE_SSH_PRIVATE_KEY_FILE = credentials('your-ssh-private-key')  // Jenkins credentials for the SSH key
+        DOCKER_REGISTRY = 'dockerhub-username'  // Docker registry (e.g., Docker Hub username)
+        DOCKER_IMAGE_NAME = 'your-app'  // Name of your Docker image
+        DOCKER_TAG = 'latest'  // Tag for the Docker image
+        DOCKER_REPO = "${DOCKER_REGISTRY}/${DOCKER_IMAGE_NAME}:${DOCKER_TAG}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                // Checkout the code repository
+                git 'https://github.com/your-repo/python-flask-app.git'
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                // Install Docker if not installed
+                script {
+                    // Check if Docker is installed
+                    def dockerInstalled = sh(script: 'which docker', returnStatus: true) == 0
+                    if (!dockerInstalled) {
+                        echo "Docker is not installed. Installing Docker..."
+                        if (isUnix()) {
+                            // Install Docker for Ubuntu or Debian-based systems
+                            sh '''
+                                sudo apt-get update -y
+                                sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+                                curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+                                sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+                                sudo apt-get update -y
+                                sudo apt-get install -y docker-ce
+                                sudo systemctl start docker
+                                sudo systemctl enable docker
+                            '''
+                        } else {
+                            // Install Docker for RedHat-based systems (Amazon Linux or CentOS)
+                            sh '''
+                                sudo yum install -y docker
+                                sudo systemctl start docker
+                                sudo systemctl enable docker
+                            '''
+                        }
+                    } else {
+                        echo "Docker is already installed."
+                    }
+                }
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    echo "Building Docker image: ${DOCKER_REPO}"
+                    // Build the Docker image
+                    sh '''
+                        docker build -t ${DOCKER_REPO} .
+                    '''
+                }
+            }
+        }
+
+        stage('Push Docker Image to Registry') {
+            steps {
+                script {
+                    echo "Pushing Docker image to registry: ${DOCKER_REPO}"
+                    // Log in to Docker Hub
+                    withCredentials([usernamePassword(credentialsId: 'docker-hub-credentials', usernameVariable: 'DOCKER_USERNAME', passwordVariable: 'DOCKER_PASSWORD')]) {
+                        sh '''
+                            echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
+                            docker push ${DOCKER_REPO}
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Run Ansible Playbook') {
+            steps {
+                script {
+                    // Set the inventory (you can use an external inventory file)
+                    def inventory = "ec2_host"
+
+                    // Run the Ansible playbook using the Ansible role to install Docker and deploy the app
+                    sh """
+                        ansible-playbook -i ${inventory} install.yaml --private-key=${ANSIBLE_SSH_PRIVATE_KEY_FILE}
+                    """
+                }
+            }
+        }
+
+        stage('Post-deployment Tests') {
+            steps {
+                // Optionally, you can add post-deployment verification tests here
+                echo "Deployment complete, running post-deployment tests..."
+                // Example: curl to check if the app is running
+                script {
+                    def app_url = "http://ec2-public-ip:80"
+                    sh "curl -f ${app_url} || exit 1"
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // Clean up if necessary
+            echo 'Cleaning up...'
+        }
+
+        success {
+            echo 'Deployment and tests succeeded!'
+        }
+
+        failure {
+            echo 'Deployment or tests failed!'
+        }
+    }
+}
